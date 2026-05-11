@@ -1,0 +1,76 @@
+# ─────────────────────────────────────────────────────────
+# JCENTRIX BACKEND — Python Dependencies
+# ─────────────────────────────────────────────────────────
+
+# FastAPI: Our web framework. Creates routes, handles requests/responses.
+fastapi==0.111.0
+
+# Uvicorn: The ASGI server that actually RUNS FastAPI (like Apache for Flask).
+uvicorn[standard]==0.29.0
+
+# SQLAlchemy: ORM — lets us write Python classes instead of raw SQL.
+# "async" version is included via asyncpg driver below.
+sqlalchemy==2.0.30
+
+# Alembic: Database migration tool — tracks schema changes over time.
+# Think of it as "Git for your database tables".
+alembic==1.13.1
+
+# asyncpg: High-performance async PostgreSQL driver for SQLAlchemy async sessions.
+asyncpg==0.29.0
+
+# psycopg2-binary: Sync PostgreSQL driver (used by Alembic for migrations).
+psycopg2-binary==2.9.9
+
+# Pydantic: Data validation library. FastAPI uses it for request/response schemas.
+pydantic==2.7.1
+
+# pydantic-settings: Loads .env files into Pydantic models (for config).
+pydantic-settings==2.2.1
+
+# python-jose: Creates and verifies JWT tokens (our authentication tokens).
+python-jose[cryptography]==3.3.0
+
+# passlib: Password hashing library (we use bcrypt algorithm for security).
+passlib[bcrypt]==1.7.4
+
+# python-multipart: Required for FastAPI to handle form data and file uploads.
+python-multipart==0.0.9
+
+# python-dotenv: Loads .env file into environment variables.
+python-dotenv==1.0.1
+
+# httpx: Async HTTP client (used internally by some FastAPI test utilities).
+httpx==0.27.0
+
+# ─── AI / ML Dependencies (we'll use these in Phase 3) ───
+
+# openai: Official OpenAI Python SDK for GPT-4o calls.
+openai==1.30.1
+
+# langchain + langgraph: LangGraph is built on top of LangChain.
+# LangGraph lets us build stateful AI workflows (the interview bot).
+langchain==0.2.1
+langgraph==0.1.1
+langchain-openai==0.1.8
+
+# sentence-transformers: HuggingFace library for creating text embeddings.
+# We use "all-MiniLM-L6-v2" model for resume ↔ job matching.
+sentence-transformers==2.7.0
+
+# chromadb: Vector database that stores and searches embeddings locally.
+chromadb==0.5.0
+
+# pdfplumber: Extracts text from PDF resumes.
+pdfplumber==0.11.0
+
+# python-docx: Extracts text from .docx (Word) resumes.
+python-docx==1.1.2
+
+# transformers: HuggingFace transformers for NER (Named Entity Recognition).
+# Used in resume parser to extract names, skills, organizations.
+transformers==4.41.1
+
+# torch: PyTorch — required by transformers and sentence-transformers.
+torch==2.3.0
+
