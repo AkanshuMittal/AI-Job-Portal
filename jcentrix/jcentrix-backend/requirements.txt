@@ -73,4 +73,3 @@ transformers==4.41.1
 
 # torch: PyTorch — required by transformers and sentence-transformers.
 torch==2.3.0
-
