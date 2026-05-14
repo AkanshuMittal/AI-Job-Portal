@@ -21,21 +21,25 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select
 
 # Our settings object (reads from .env)
 from core.config import settings
 
 # Database setup function (creates tables on startup)
-from core.database import create_all_tables
+from core.database import AsyncSessionLocal, create_all_tables
+from core.security import hash_password
+
+# Import ORM models
+from models.user import User, UserRole
 
 # ── Import API Routers ────────────────────────────────────
 # We import the router objects from each module.
 # Each router is a group of related routes (like a mini-app).
 from api.auth import router as auth_router
-# Phase 2 routers — will be imported as we build them:
-# from api.admin import router as admin_router
-# from api.hr import router as hr_router
-# from api.seeker import router as seeker_router
+from api.admin import router as admin_router
+from api.hr import router as hr_router
+from api.seeker import router as seeker_router
 # from api.ai import router as ai_router
 
 # ── Logging Setup ─────────────────────────────────────────
@@ -45,6 +49,44 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+async def create_initial_super_admin():
+    """
+    Bootstrap a Super Admin on startup when environment variables are provided.
+    """
+    if not settings.SUPERADMIN_EMAIL or not settings.SUPERADMIN_PASSWORD:
+        logger.info("No SUPERADMIN credentials provided, skipping bootstrap.")
+        return
+
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(User).where(User.role == UserRole.SUPER_ADMIN))
+        existing_super_admin = result.scalar_one_or_none()
+        if existing_super_admin:
+            logger.info("Super Admin already exists, bootstrap skipped.")
+            return
+
+        result = await session.execute(select(User).where(User.email == settings.SUPERADMIN_EMAIL))
+        existing_email = result.scalar_one_or_none()
+        if existing_email:
+            logger.warning(
+                "Super Admin bootstrap skipped because email %s is already registered.",
+                settings.SUPERADMIN_EMAIL,
+            )
+            return
+
+        super_admin = User(
+            email=settings.SUPERADMIN_EMAIL,
+            full_name=settings.SUPERADMIN_FULL_NAME,
+            hashed_password=hash_password(settings.SUPERADMIN_PASSWORD),
+            role=UserRole.SUPER_ADMIN,
+            is_active=True,
+            is_verified=True,
+        )
+        session.add(super_admin)
+        await session.commit()
+        await session.refresh(super_admin)
+        logger.info("Super Admin created: %s", super_admin.email)
 
 
 # ── Lifespan Context Manager ──────────────────────────────
@@ -71,6 +113,8 @@ async def lifespan(app: FastAPI):
     logger.info("📦 Creating database tables...")
     await create_all_tables()
     logger.info("✅ Database tables ready.")
+
+    await create_initial_super_admin()
 
     # Hand control over to FastAPI (app runs here)
     yield
@@ -152,11 +196,9 @@ app.mount(
 # This versioning allows future API changes without breaking clients.
 
 app.include_router(auth_router, prefix="/api/v1")
-
-# These will be uncommented as we build each phase:
-# app.include_router(admin_router, prefix="/api/v1")
-# app.include_router(hr_router, prefix="/api/v1")
-# app.include_router(seeker_router, prefix="/api/v1")
+app.include_router(admin_router, prefix="/api/v1")
+app.include_router(hr_router, prefix="/api/v1")
+app.include_router(seeker_router, prefix="/api/v1")
 # app.include_router(ai_router, prefix="/api/v1")
 
 
