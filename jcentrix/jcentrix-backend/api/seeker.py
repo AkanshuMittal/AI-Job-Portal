@@ -49,7 +49,11 @@ async def search_jobs(
     """
     Search all published jobs. (Open to all authenticated users)
     """
-    result = await db.execute(select(Job).where(Job.status == "published"))
+    result = await db.execute(
+        select(Job)
+        .options(selectinload(Job.company))
+        .where(Job.status == "published")
+    )
     return result.scalars().all()
 
 @router.get("/jobs/{job_id}", response_model=JobOut)
@@ -103,5 +107,49 @@ async def apply_to_job(
     new_app = Application(job_id=job_id, seeker_id=profile.id)
     db.add(new_app)
     await db.commit()
-    await db.refresh(new_app)
-    return new_app
+    
+    # 4. Load relationships for the response
+    result = await db.execute(
+        select(Application)
+        .options(
+            selectinload(Application.job).selectinload(Job.company),
+            selectinload(Application.seeker).selectinload(SeekerProfile.user)
+        )
+        .where(Application.id == new_app.id)
+    )
+    return result.scalar_one()
+
+
+@router.get("/applications", response_model=List[ApplicationOut])
+async def get_my_applications(
+    db: AsyncSession = Depends(get_db),
+    seeker: User = Depends(get_current_seeker)
+):
+    """
+    Get all applications submitted by the current job seeker.
+    """
+    # 1. Get seeker profile
+    profile_result = await db.execute(select(SeekerProfile).where(SeekerProfile.user_id == seeker.id))
+    profile = profile_result.scalar_one_or_none()
+    
+    if not profile:
+        return []
+
+    # 2. Get applications for the current user's seeker profile
+    # We join directly on SeekerProfile to be 100% sure we get the right data
+    query = (
+        select(Application)
+        .join(SeekerProfile)
+        .options(
+            selectinload(Application.job).selectinload(Job.company),
+            selectinload(Application.seeker).selectinload(SeekerProfile.user)
+        )
+        .where(SeekerProfile.user_id == seeker.id)
+    )
+    
+    result = await db.execute(query)
+    applications = result.scalars().all()
+    print(f"DEBUG: Found {len(applications)} applications for user {seeker.email}")
+    return applications
+
+

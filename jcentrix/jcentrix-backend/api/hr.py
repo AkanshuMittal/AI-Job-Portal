@@ -50,10 +50,18 @@ async def create_job(
         company_id=hr.company_id,
         creator_id=hr.id
     )
+    # 3. Save job
     db.add(new_job)
     await db.commit()
-    await db.refresh(new_job)
-    return new_job
+    
+    # 4. Load company relationship for the response
+    result = await db.execute(
+        select(Job)
+        .options(selectinload(Job.company))
+        .where(Job.id == new_job.id)
+    )
+    return result.scalar_one()
+
 
 @router.get("/jobs", response_model=List[JobOut])
 async def list_my_jobs(
@@ -63,7 +71,11 @@ async def list_my_jobs(
     """
     List all jobs posted by the HR user's company.
     """
-    result = await db.execute(select(Job).where(Job.company_id == hr.company_id))
+    result = await db.execute(
+        select(Job)
+        .options(selectinload(Job.company))
+        .where(Job.company_id == hr.company_id)
+    )
     return result.scalars().all()
 
 @router.get("/applications/{job_id}", response_model=List[ApplicationOut])
@@ -81,7 +93,8 @@ async def get_job_applications(
         raise HTTPException(status_code=403, detail="Not authorized to view applications for this job")
     
     query = select(Application).where(Application.job_id == job_id).options(
-        selectinload(Application.seeker).selectinload(SeekerProfile.user)
+        selectinload(Application.seeker).selectinload(SeekerProfile.user),
+        selectinload(Application.job).selectinload(Job.company)
     )
     result = await db.execute(query)
     return result.scalars().all()
