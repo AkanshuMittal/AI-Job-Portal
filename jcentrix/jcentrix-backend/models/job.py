@@ -57,7 +57,7 @@ class Job(Base):
     experience_required = Column(String(100), nullable=True) # e.g., "3+ years"
 
     # ── Status & Settings ─────────────────────────────────
-    status = Column(Enum(JobStatus), default=JobStatus.DRAFT, nullable=False)
+    status = Column(Enum(JobStatus), default=JobStatus.PUBLISHED, nullable=False)
     is_ai_interview_enabled = Column(Boolean, default=True) # Should system trigger AI interview?
 
     # ── Timestamps ────────────────────────────────────────
