@@ -1,8 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from typing import List
+import pdfplumber
+import io
 
 from core.database import get_db
 from api.deps import get_current_seeker, get_current_user
@@ -40,6 +42,43 @@ async def create_or_update_profile(
     await db.commit()
     await db.refresh(profile)
     return profile
+
+@router.post("/profile/resume", response_model=SeekerProfileOut)
+async def upload_resume(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    seeker: User = Depends(get_current_seeker)
+):
+    """
+    Upload a resume, parse its text using pdfplumber, and save to profile.
+    """
+    result = await db.execute(select(SeekerProfile).where(SeekerProfile.user_id == seeker.id))
+    profile = result.scalar_one_or_none()
+    
+    if not profile:
+        raise HTTPException(status_code=400, detail="Create a profile first before uploading a resume.")
+        
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF resumes are supported currently.")
+        
+    try:
+        content = await file.read()
+        parsed_text = ""
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    parsed_text += text + "\n"
+        
+        # Save parsed data (the AI will read this)
+        profile.parsed_data = {"extracted_text": parsed_text}
+        profile.resume_path = file.filename
+        
+        await db.commit()
+        await db.refresh(profile)
+        return profile
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse resume: {str(e)}")
 
 @router.get("/jobs", response_model=List[JobOut])
 async def search_jobs(
