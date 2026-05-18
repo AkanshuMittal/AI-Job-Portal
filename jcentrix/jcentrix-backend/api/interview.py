@@ -131,15 +131,18 @@ async def interview_websocket(
     - On completion: {"type": "completed", "text": "closing", "is_final": true}
     """
     await websocket.accept()
+    print(f"DEBUG: WebSocket ACCEPTED for interview {interview_id}")
     logger.info(f"WebSocket connected for interview {interview_id}")
 
     # Load interview from DB
+    print("DEBUG: Loading interview from DB...")
     result = await db.execute(
         select(Interview).options(
             selectinload(Interview.application)
         ).where(Interview.id == interview_id)
     )
     interview = result.scalar_one_or_none()
+    print(f"DEBUG: Interview loaded: {interview}")
 
     if not interview:
         await websocket.send_json({"type": "error", "text": "Interview not found."})
@@ -160,12 +163,12 @@ async def interview_websocket(
         await websocket.close()
         return
 
-    # Load seeker's skills for context
     seeker_result = await db.execute(
         select(SeekerProfile).where(SeekerProfile.id == application.seeker_id)
     )
     seeker_profile = seeker_result.scalar_one_or_none()
     candidate_skills = ", ".join(seeker_profile.skills or []) if seeker_profile else "Not specified"
+    resume_data = seeker_profile.parsed_data if seeker_profile else {}
 
     # Mark interview as in_progress
     interview.is_completed = "in_progress"
@@ -178,18 +181,23 @@ async def interview_websocket(
     try:
         # ── GREETING (First Connection) ───────────────────
         if not chat_history:
+            print("DEBUG: No chat history found, generating initial greeting...")
             # Generate opening greeting + first question
             greeting = await generate_ai_response(
                 chat_history=[],
                 job_title=job.title,
                 job_description=job.description or "",
-                candidate_skills=candidate_skills
+                candidate_skills=candidate_skills,
+                resume_data=resume_data
             )
+            print(f"DEBUG: Greeting generated: {greeting[:50]}...")
             chat_history.append({"role": "assistant", "content": greeting})
 
-            # Get TTS audio from ElevenLabs
+            # Get TTS audio
+            print("DEBUG: Calling text_to_speech (edge-tts)...")
             audio_bytes = await text_to_speech(greeting)
             audio_b64 = base64.b64encode(audio_bytes).decode() if audio_bytes else None
+            print("DEBUG: TTS audio generation complete.")
 
             # Send greeting to frontend
             await websocket.send_json({
@@ -205,6 +213,25 @@ async def interview_websocket(
             interview.chat_history = chat_history
             interview.current_question_index = 1
             await db.commit()
+        else:
+            # ── RECONNECT (Resume Interview) ──────────────────
+            print("DEBUG: Chat history exists, resuming interview...", flush=True)
+            last_ai_msg = next((m["content"] for m in reversed(chat_history) if m["role"] == "assistant"), "Welcome back.")
+            current_q_num = interview.current_question_index or 1
+            
+            # Send the last message to the frontend so it knows we are connected
+            await websocket.send_json({
+                "type": "question",
+                "text": last_ai_msg,
+                "audio_base64": None, # Skip audio on reconnect to save time/API calls
+                "question_number": current_q_num,
+                "total_questions": 0, # Unused, timer used instead
+                "is_final": False
+            })
+
+        # Track maximum proctor violations during the entire session
+        max_tab_switches = 0
+        max_look_aways = 0
 
         # ── MAIN INTERVIEW LOOP ───────────────────────────
         while True:
@@ -212,6 +239,12 @@ async def interview_websocket(
             data = await websocket.receive_text()
             message = json.loads(data)
             candidate_answer = message.get("text", "").strip()
+            
+            # Retrieve latest proctor violation counts from frontend
+            tab_switches = message.get("tab_switches", 0)
+            look_aways = message.get("look_aways", 0)
+            max_tab_switches = max(max_tab_switches, tab_switches)
+            max_look_aways = max(max_look_aways, look_aways)
 
             if not candidate_answer:
                 continue
@@ -228,14 +261,19 @@ async def interview_websocket(
             )
             score_result = await score_answer(last_ai_msg, candidate_answer, job.title)
 
-            # Check if interview is complete
-            if current_q_num >= TOTAL_QUESTIONS:
+            # Check if interview is complete (15 minute timer)
+            elapsed = datetime.now(timezone.utc) - interview.started_at
+            time_is_up = elapsed.total_seconds() >= 15 * 60
+
+            if time_is_up:
                 # Generate closing statement
                 closing = await generate_ai_response(
                     chat_history=chat_history,
                     job_title=job.title,
                     job_description=job.description or "",
-                    candidate_skills=candidate_skills
+                    candidate_skills=candidate_skills,
+                    resume_data=resume_data,
+                    time_is_up=True
                 )
                 chat_history.append({"role": "assistant", "content": closing})
 
@@ -249,6 +287,22 @@ async def interview_websocket(
 
                 # Generate HR feedback summary
                 feedback = await generate_final_feedback(chat_history, job.title, final_score)
+
+                # Append Proctoring compliance report directly into the HR feedback
+                proctor_summary = f"\n\n---\n🛡️ **AI Proctoring & Compliance Report:**\n"
+                proctor_summary += f"* Window Focus Loss / Tab Switches: **{max_tab_switches}** violations\n"
+                proctor_summary += f"* Head Rotation / Looking Away: **{max_look_aways}** flags\n"
+                
+                integrity_score = max(100 - (max_tab_switches * 15) - (max_look_aways * 4), 0)
+                proctor_summary += f"* Overall Compliance Rating: **{integrity_score}%** ("
+                if integrity_score >= 85:
+                    proctor_summary += "🟢 Fully Compliant)\n"
+                elif integrity_score >= 50:
+                    proctor_summary += "🟡 Suspicious Activity Detected)\n"
+                else:
+                    proctor_summary += "🔴 HIGH CHEATING RISK)\n"
+                
+                feedback += proctor_summary
 
                 # Get TTS for closing
                 audio_bytes = await text_to_speech(closing)
@@ -267,8 +321,8 @@ async def interview_websocket(
                     "type": "completed",
                     "text": closing,
                     "audio_base64": audio_b64,
-                    "question_number": TOTAL_QUESTIONS,
-                    "total_questions": TOTAL_QUESTIONS,
+                    "question_number": current_q_num,
+                    "total_questions": 0,
                     "is_final": True,
                     "score": final_score
                 })
@@ -279,25 +333,34 @@ async def interview_websocket(
                 chat_history=chat_history,
                 job_title=job.title,
                 job_description=job.description or "",
-                candidate_skills=candidate_skills
+                candidate_skills=candidate_skills,
+                resume_data=resume_data,
+                time_is_up=False
             )
-            chat_history.append({"role": "assistant", "content": ai_response})
+            # Check if it's the error fallback message
+            is_error = ai_response == "I apologize, I'm having a technical issue. Could you please repeat your answer?"
+
+            if not is_error:
+                chat_history.append({"role": "assistant", "content": ai_response})
+                # Save progress to DB
+                interview.chat_history = chat_history
+                interview.current_question_index = current_q_num + 1
+                await db.commit()
+            else:
+                # Discard the candidate's latest answer from the temporary chat history so they can retry it
+                if chat_history and chat_history[-1]["role"] == "user":
+                    chat_history.pop()
 
             # Get TTS audio
             audio_bytes = await text_to_speech(ai_response)
             audio_b64 = base64.b64encode(audio_bytes).decode() if audio_bytes else None
 
-            # Save progress to DB
-            interview.chat_history = chat_history
-            interview.current_question_index = current_q_num + 1
-            await db.commit()
-
-            # Send next question to frontend
+            # Send next question (or retry prompt) to frontend
             await websocket.send_json({
                 "type": "question",
                 "text": ai_response,
                 "audio_base64": audio_b64,
-                "question_number": current_q_num + 1,
+                "question_number": current_q_num if is_error else current_q_num + 1,
                 "total_questions": TOTAL_QUESTIONS,
                 "is_final": False
             })
@@ -309,6 +372,7 @@ async def interview_websocket(
         await db.commit()
 
     except Exception as e:
+        print(f"DEBUG EXCEPTION: Interview WebSocket error: {e}")
         logger.error(f"Interview WebSocket error: {e}")
         try:
             await websocket.send_json({"type": "error", "text": "An error occurred. Please try again."})
