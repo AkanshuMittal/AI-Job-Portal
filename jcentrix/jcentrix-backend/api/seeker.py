@@ -43,6 +43,20 @@ async def create_or_update_profile(
     await db.refresh(profile)
     return profile
 
+@router.get("/profile", response_model=SeekerProfileOut)
+async def get_my_profile(
+    db: AsyncSession = Depends(get_db),
+    seeker: User = Depends(get_current_seeker)
+):
+    """
+    Get the currently logged-in seeker's profile.
+    """
+    result = await db.execute(select(SeekerProfile).where(SeekerProfile.user_id == seeker.id))
+    profile = result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return profile
+
 @router.post("/profile/resume", response_model=SeekerProfileOut)
 async def upload_resume(
     file: UploadFile = File(...),
@@ -70,6 +84,9 @@ async def upload_resume(
                 if text:
                     parsed_text += text + "\n"
         
+        if not parsed_text.strip():
+            raise HTTPException(status_code=400, detail="Could not extract text from this PDF. Please ensure it is a standard text-based PDF (like from Word or Google Docs), not a scanned image.")
+        
         # Save parsed data (the AI will read this)
         profile.parsed_data = {"extracted_text": parsed_text}
         profile.resume_path = file.filename
@@ -77,6 +94,8 @@ async def upload_resume(
         await db.commit()
         await db.refresh(profile)
         return profile
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse resume: {str(e)}")
 
@@ -181,7 +200,8 @@ async def get_my_applications(
         .join(SeekerProfile)
         .options(
             selectinload(Application.job).selectinload(Job.company),
-            selectinload(Application.seeker).selectinload(SeekerProfile.user)
+            selectinload(Application.seeker).selectinload(SeekerProfile.user),
+            selectinload(Application.interview)
         )
         .where(SeekerProfile.user_id == seeker.id)
     )
