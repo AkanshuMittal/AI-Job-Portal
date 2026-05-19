@@ -11,11 +11,11 @@
 #      → Creates interview record in DB
 #   2. Frontend connects to WS /interview/ws/{interview_id}
 #      → AI greets candidate and asks first question
-#      → ElevenLabs TTS converts text to audio
+#      → Edge TTS converts text to audio
 #      → Sends back {text, audio_base64} to frontend
 #   3. Candidate speaks → Web Speech API → text sent to WS
 #      → AI evaluates, scores, asks next question
-#      → Repeat until TOTAL_QUESTIONS reached
+#      → Repeat until Time will not reached/>
 #   4. Interview ends → Score saved → HR can view results
 # ─────────────────────────────────────────────────────────
 
@@ -41,6 +41,7 @@ from services.interview_service import (
     generate_ai_response,
     score_answer,
     generate_final_feedback,
+    generate_candidate_feedback,
     text_to_speech,
     TOTAL_QUESTIONS
 )
@@ -112,6 +113,46 @@ async def get_interview(
     if not interview:
         raise HTTPException(status_code=404, detail="Interview not found.")
     return interview
+
+
+def is_termination_requested(text: str) -> bool:
+    """
+    Checks if the candidate is requesting to stop or end the interview.
+    """
+    text = text.lower().strip()
+    # Remove standard punctuation for clean matching
+    for char in [".", ",", "!", "?", '"', "'"]:
+        text = text.replace(char, "")
+    
+    termination_phrases = [
+        "stop the interview",
+        "end the interview",
+        "quit the interview",
+        "cancel the interview",
+        "i dont want to continue",
+        "i do not want to continue",
+        "i dont continue",
+        "i do not continue",
+        "stop this interview",
+        "end this interview",
+        "exit the interview",
+        "exit this interview",
+        "terminate the interview",
+        "terminate this interview",
+        "i want to quit",
+        "i want to stop",
+        "i want to exit",
+    ]
+    
+    # Check for short exact words
+    if text in ["quit", "exit", "stop", "terminate"]:
+        return True
+        
+    for phrase in termination_phrases:
+        if phrase in text:
+            return True
+            
+    return False
 
 
 # ── 3. WebSocket Interview Session ───────────────────────
@@ -254,18 +295,32 @@ async def interview_websocket(
 
             current_q_num = interview.current_question_index
 
-            # Score this answer in background
-            last_ai_msg = next(
-                (m["content"] for m in reversed(chat_history) if m["role"] == "assistant"),
-                ""
-            )
-            score_result = await score_answer(last_ai_msg, candidate_answer, job.title)
+            user_wants_to_stop = is_termination_requested(candidate_answer)
 
-            # Check if interview is complete (15 minute timer)
+            # Score this answer in background
+            if user_wants_to_stop:
+                score_result = {
+                    "score": 0,
+                    "feedback": "Candidate requested to end the interview early.",
+                    "ideal_answer": "N/A"
+                }
+            else:
+                last_ai_msg = next(
+                    (m["content"] for m in reversed(chat_history) if m["role"] == "assistant"),
+                    ""
+                )
+                score_result = await score_answer(last_ai_msg, candidate_answer, job.title)
+            
+            # Save the score and ideal answer directly onto the candidate's message
+            chat_history[-1]["score"] = score_result.get("score", 5)
+            chat_history[-1]["feedback"] = score_result.get("feedback", "")
+            chat_history[-1]["ideal_answer"] = score_result.get("ideal_answer", "N/A")
+
+            # Check if interview is complete (15 minute timer or candidate termination request)
             elapsed = datetime.now(timezone.utc) - interview.started_at
             time_is_up = elapsed.total_seconds() >= 15 * 60
 
-            if time_is_up:
+            if time_is_up or user_wants_to_stop:
                 # Generate closing statement
                 closing = await generate_ai_response(
                     chat_history=chat_history,
@@ -273,7 +328,8 @@ async def interview_websocket(
                     job_description=job.description or "",
                     candidate_skills=candidate_skills,
                     resume_data=resume_data,
-                    time_is_up=True
+                    time_is_up=time_is_up,
+                    user_wants_to_stop=user_wants_to_stop
                 )
                 chat_history.append({"role": "assistant", "content": closing})
 
@@ -304,6 +360,9 @@ async def interview_websocket(
                 
                 feedback += proctor_summary
 
+                # Generate Candidate Feedback (Sanitized)
+                candidate_feedback_text = await generate_candidate_feedback(chat_history, job.title)
+
                 # Get TTS for closing
                 audio_bytes = await text_to_speech(closing)
                 audio_b64 = base64.b64encode(audio_bytes).decode() if audio_bytes else None
@@ -312,6 +371,7 @@ async def interview_websocket(
                 interview.chat_history = chat_history
                 interview.interview_score = final_score
                 interview.feedback_summary = feedback
+                interview.candidate_feedback = candidate_feedback_text
                 interview.is_completed = "completed"
                 interview.completed_at = datetime.now(timezone.utc)
                 await db.commit()
