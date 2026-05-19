@@ -94,7 +94,8 @@ async def get_job_applications(
     
     query = select(Application).where(Application.job_id == job_id).options(
         selectinload(Application.seeker).selectinload(SeekerProfile.user),
-        selectinload(Application.job).selectinload(Job.company)
+        selectinload(Application.job).selectinload(Job.company),
+        selectinload(Application.interview)
     )
     result = await db.execute(query)
     return result.scalars().all()
