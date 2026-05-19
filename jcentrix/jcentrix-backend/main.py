@@ -40,6 +40,7 @@ from api.auth import router as auth_router
 from api.admin import router as admin_router
 from api.hr import router as hr_router
 from api.seeker import router as seeker_router
+from api.interview import router as interview_router
 # from api.ai import router as ai_router
 
 # ── Logging Setup ─────────────────────────────────────────
@@ -199,6 +200,7 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
 app.include_router(hr_router, prefix="/api/v1")
 app.include_router(seeker_router, prefix="/api/v1")
+app.include_router(interview_router, prefix="/api/v1")
 # app.include_router(ai_router, prefix="/api/v1")
 
 
