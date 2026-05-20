@@ -5,6 +5,8 @@ from enum import Enum
 
 from schemas.seeker_profile import SeekerProfileBase
 from schemas.user import UserOut
+from schemas.job import JobOut
+from schemas.interview import InterviewOut
 
 class ApplicationStatus(str, Enum):
     APPLIED = "applied"           # Initial state
@@ -36,6 +38,8 @@ class ApplicationOut(ApplicationBase):
     match_score: Optional[float] = None
     applied_at: datetime
     seeker: Optional[SeekerProfileWithUser] = None
+    job: Optional[JobOut] = None  # Changed from Any to JobOut to fix serialization error
+    interview: Optional[InterviewOut] = None
 
     class Config:
         from_attributes = True
