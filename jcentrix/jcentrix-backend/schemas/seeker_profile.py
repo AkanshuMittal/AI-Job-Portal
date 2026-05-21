@@ -24,3 +24,4 @@ class SeekerProfileOut(SeekerProfileBase):
 
     class Config:
         from_attributes = True
+
