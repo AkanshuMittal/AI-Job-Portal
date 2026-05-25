@@ -26,7 +26,7 @@ from core.database import Base
 
 # ── Role Enum ─────────────────────────────────────────────
 # Using Python enum ensures only valid roles can be stored.
-# SQLAlchemy will create a PostgreSQL ENUM type for this column.
+# SQLAlchemy will create a MySQL ENUM type for this column.
 class UserRole(str, enum.Enum):
     """
     Defines the three user roles in the system.
