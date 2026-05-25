@@ -28,7 +28,7 @@ class Company(Base):
     """
 
     # ── Table Name ────────────────────────────────────────
-    # SQLAlchemy uses this to name the actual PostgreSQL table
+    # SQLAlchemy uses this to name the actual MySQL table
     __tablename__ = "companies"
 
     # ── Primary Key ───────────────────────────────────────
