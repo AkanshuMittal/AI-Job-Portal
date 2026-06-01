@@ -9,7 +9,6 @@
 #      so the Next.js frontend can call our API
 #   3. Registers all API routers (auth, hr, admin, seeker, ai)
 #   4. On startup: creates database tables automatically
-#
 # HOW TO RUN:
 #   uvicorn main:app --reload --port 8000
 #   Then visit: http://localhost:8000/docs  (Swagger UI)
@@ -18,10 +17,11 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
+import time
 
 # Our settings object (reads from .env)
 from core.config import settings
@@ -44,11 +44,34 @@ from api.interview import router as interview_router
 # from api.ai import router as ai_router
 
 # ── Logging Setup ─────────────────────────────────────────
-# Configure Python's built-in logging for debug messages
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+import os
+from logging.handlers import RotatingFileHandler
+
+# Create logs directory if it doesn't exist
+os.makedirs("logs", exist_ok=True)
+
+# Configure the root logger
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+
+# Shared formatter
+log_formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s")
+
+# Console Handler (writes logs to standard output)
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+root_logger.addHandler(console_handler)
+
+# File Handler (writes logs to logs/api.log with rotating backups)
+file_handler = RotatingFileHandler(
+    "logs/api.log",
+    maxBytes=10 * 1024 * 1024,  # 10 MB per log file
+    backupCount=5,              # Keep up to 5 backup log files
+    encoding="utf-8"
 )
+file_handler.setFormatter(log_formatter)
+root_logger.addHandler(file_handler)
+
 logger = logging.getLogger(__name__)
 
 
@@ -107,7 +130,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"   Environment : {settings.ENVIRONMENT}")
     logger.info(f"   Database    : {settings.DATABASE_URL}")
 
-    # Create all SQLAlchemy model tables in PostgreSQL.
+    # Create all SQLAlchemy model tables in MySQL.
     # This is equivalent to: CREATE TABLE IF NOT EXISTS ...
     # Safe to run every time — it won't overwrite existing tables.
     # NOTE: In production, use Alembic migrations instead.
@@ -175,6 +198,26 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """
+    Middleware to log details of every incoming API request and its response.
+    Logs are written to both standard output and logs/api.log.
+    """
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = (time.time() - start_time) * 1000
+    client_ip = request.client.host if request.client else "unknown"
+    
+    logger.info(
+        f"API Hit | Client: {client_ip} | Method: {request.method} | "
+        f"Path: {request.url.path} | Status: {response.status_code} | "
+        f"Duration: {process_time:.2f}ms"
+    )
+    
+    return response
+
+
 # ── Static File Serving ───────────────────────────────────
 # Serves uploaded files (resumes, logos) at /files/...
 # e.g., GET /files/resumes/john_doe_cv.pdf
@@ -226,3 +269,4 @@ async def root():
 async def health_check():
     """Detailed health check for monitoring."""
     return {"status": "healthy", "database": "connected"}
+
