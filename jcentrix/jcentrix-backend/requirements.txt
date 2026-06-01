@@ -48,3 +48,4 @@ httpx==0.27.0
 # groq: Official Groq Python SDK — used in interview_service.py for AI interview
 # questions, evaluation, and feedback generation (Llama 3.3-70b model).
 groq==0.8.0
+
