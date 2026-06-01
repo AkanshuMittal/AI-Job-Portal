@@ -11,9 +11,9 @@
 #   Client sends email + password + role
 #   → We check email isn't already taken
 #   → We hash the password
-#   → We save the new user to PostgreSQL
+#   → We save the new user to MySQL
 #   → We return user info (without password)
-#
+
 # FLOW FOR LOGIN:
 #   Client sends email + password
 #   → We find user by email
@@ -22,7 +22,9 @@
 #   → We return the token + user info
 # ─────────────────────────────────────────────────────────
 
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from datetime import datetime, timezone
@@ -157,52 +159,114 @@ async def login(
     4. Create a JWT token with user info as claims
     5. Return token + user info
     """
+    try:
+        # ── Step 1: Find user by email ────────────────────────
+        result = await db.execute(
+            select(User).where(User.email == login_data.email)
+        )
+        user = result.scalar_one_or_none()
 
-    # ── Step 1: Find user by email ────────────────────────
-    result = await db.execute(
-        select(User).where(User.email == login_data.email)
-    )
+        # Use a generic error message for security.
+        # Never tell attackers whether the email OR password was wrong —
+        # that helps them enumerate valid emails.
+        auth_error = HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+        if user is None:
+            raise auth_error  # Email not found
+
+        # ── Step 2: Verify password ───────────────────────────
+        # verify_password() uses bcrypt to check plain vs stored hash
+        if not verify_password(login_data.password, user.hashed_password):
+            raise auth_error  # Wrong password
+
+        # ── Step 3: Check account status ─────────────────────
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Account deactivated. Contact Jcentrix support."
+            )
+
+        # ── Step 4: Update last_login timestamp ──────────────
+        user.last_login = datetime.now(timezone.utc)
+        # No explicit save needed — get_db() auto-commits at end of request
+
+        # ── Step 5: Create JWT token ──────────────────────────
+        # The token payload (claims) — stored inside the signed JWT
+        # "sub" (subject): standard JWT claim for user identity
+        token_payload = {
+            "sub": user.email,          # Used to look up user on every request
+            "role": user.role.value,    # e.g., "hr" — for quick role checks
+            "user_id": user.id          # Useful for some operations
+        }
+        access_token = create_access_token(data=token_payload)
+
+    # ── Step 6: Return token + user info ─────────────────
+        return Token(
+            access_token=access_token,
+            token_type="bearer",
+            user=UserOut.model_validate(user)
+        )
+    except Exception as e:
+        # Log the exception for debugging (in real app, use proper logging)
+        print(f"Login error: {e}")
+        # Return a generic error message to the client
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+async def authenticate_user(
+    email: str,
+    password: str,
+    db: AsyncSession
+) -> User:
+    """Authenticate email/password and return the active user."""
+    result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
 
-    # Use a generic error message for security.
-    # Never tell attackers whether the email OR password was wrong —
-    # that helps them enumerate valid emails.
     auth_error = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Incorrect email or password.",
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    if user is None:
-        raise auth_error  # Email not found
+    if user is None or not verify_password(password, user.hashed_password):
+        raise auth_error
 
-    # ── Step 2: Verify password ───────────────────────────
-    # verify_password() uses bcrypt to check plain vs stored hash
-    if not verify_password(login_data.password, user.hashed_password):
-        raise auth_error  # Wrong password
-
-    # ── Step 3: Check account status ─────────────────────
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account deactivated. Contact Jcentrix support."
         )
 
-    # ── Step 4: Update last_login timestamp ──────────────
-    user.last_login = datetime.now(timezone.utc)
-    # No explicit save needed — get_db() auto-commits at end of request
+    return user
 
-    # ── Step 5: Create JWT token ──────────────────────────
-    # The token payload (claims) — stored inside the signed JWT
-    # "sub" (subject): standard JWT claim for user identity
+
+@router.post(
+    "/token",
+    response_model=Token,
+    summary="Login using OAuth2 password form"
+)
+async def login_oauth2(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: AsyncSession = Depends(get_db)
+):
+    """Login endpoint compatible with Swagger OAuth2 Authorize."""
+    user = await authenticate_user(form_data.username, form_data.password, db)
+    user.last_login = datetime.now(timezone.utc)
+
     token_payload = {
-        "sub": user.email,          # Used to look up user on every request
-        "role": user.role.value,    # e.g., "hr" — for quick role checks
-        "user_id": user.id          # Useful for some operations
+        "sub": user.email,
+        "role": user.role.value,
+        "user_id": user.id
     }
     access_token = create_access_token(data=token_payload)
 
-    # ── Step 6: Return token + user info ─────────────────
     return Token(
         access_token=access_token,
         token_type="bearer",
@@ -231,3 +295,4 @@ async def get_me(
     The client should call this after login to confirm their identity.
     """
     return UserOut.model_validate(current_user)
+
